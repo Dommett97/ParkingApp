@@ -13,15 +13,19 @@ server_name = 'parkpal-server.database.windows.net'
 database_name = 'ParkingDb'
 username = 'parkpal-admin'
 password = 'Password123'
-driver = '{ODBC Driver 17 for SQL Server}'
 
-conn = pyodbc.connect(f'DRIVER={driver};SERVER={server_name};DATABASE={database_name};UID={username};PWD={password}')
+connection_string = 'Driver={ODBC Driver 17 for SQL Server};Server=' + server_name + ';Database=' + database_name + ';UID=' + username + ';PWD=' + password + ';Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;'
+
+conn = pyodbc.connect(connection_string)
+
+cursor = conn.cursor()
+
 
 
 # Execute a SQL query to select all rows from a table
 query = "SELECT * FROM parking_table"
 df = pd.read_sql_query(query, conn)
-print(df.head(10))
+print(df.head(1000))
 # Creating Features and Target Variable
 X = df[['time_diff', 'temp', 'humid']]
 y = df['is_parked']
@@ -128,28 +132,55 @@ df['day_exit'] = df['time_exit'].dt.day_name()
 # Create a new column to indicate the parking duration in hours
 df['duration'] = (df['time_exit'] - df['time_entry']) / timedelta(hours=1)
 
+
 # Define a function to categorize the pricing based on parking duration and day of week
 def categorize_price(row):
     if row['duration'] >= 1:
         if row['day_entry'] == row['day_exit']:
             if row['time_entry'].hour >= 10 and row['time_entry'].hour <= 20:
-                return 'Peak Hours (£7.50)'
+                ticket_type = 'Peak Hours (£7.50)'
+                price_change = 0.75
             else:
-                return 'Off Peak Hours (£6)'
+                ticket_type = 'Off Peak Hours (£6)'
+                price_change = 0.25
+        else:
+            ticket_type = '24 Hour Pass (£12)'
+            price_change = 1.0
+
+        base_price = 4.0  # Default price
+        if ticket_type == 'Peak Hours (£7.50)' or ticket_type == 'Off Peak Hours (£6)':
+            base_price += price_change * base_price
+
+        # Update price_table
+        conn = pyodbc.connect('Driver={ODBC Driver 17 for SQL Server};'
+                              'Server=parkpal-server.database.windows.net;'
+                              'Database=ParkingDb;'
+                              'uid=parkpal-admin;'
+                              'pwd=Password123')
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO price_table (price) VALUES (?)", (base_price,))
+        conn.commit()
+        conn.close()
+
+        return base_price
+
 
 # Categorize the pricing for each row
 df['pricing'] = df.apply(categorize_price, axis=1)
 
 # Drop rows with missing values in the 'pricing' column
-df.dropna(subset=['pricing'], inplace=True)
-print(df['pricing'].value_counts())
+# Group the data by ticket type
+groups = df.groupby('pricing')
 
-# Visualize the distribution of pricing categories
-plt.hist(df['pricing'], bins=np.arange(3)-0.5, rwidth=0.8, align='mid')
+# Plot a histogram for each group
+for name, group in groups:
+    plt.hist(group['pricing'], bins=np.arange(3)-0.5, rwidth=0.8, align='mid', label=name)
+
 plt.xticks(rotation=45)
-plt.title('Distribution of Pricing Categories')
+plt.title('Distribution of Pricing Categories by Ticket Type')
 plt.xlabel('Pricing Category')
 plt.ylabel('Number of Cars')
+plt.legend()
 plt.show()
 
 # Prediction 3 - Is the car park likely to be busy based on temp
